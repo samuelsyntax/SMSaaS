@@ -1,0 +1,656 @@
+// Prisma Schema for School Management System
+// Multi-tenant architecture with row-level security via schoolId
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum Role {
+  SUPER_ADMIN
+  SCHOOL_ADMIN
+  TEACHER
+  STUDENT
+  PARENT
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  EXCUSED
+}
+
+enum PaymentStatus {
+  PENDING
+  PARTIAL
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  CARD
+  CHEQUE
+  ONLINE
+}
+
+enum ExamType {
+  QUIZ
+  MIDTERM
+  FINAL
+  ASSIGNMENT
+  PROJECT
+}
+
+enum AcademicTermType {
+  SEMESTER
+  TRIMESTER
+  QUARTER
+}
+
+// ============================================================================
+// CORE ENTITIES
+// ============================================================================
+
+/// School - Tenant entity for multi-tenancy
+model School {
+  id          String   @id @default(cuid())
+  name        String
+  code        String   @unique // Short code for the school
+  address     String?
+  city        String?
+  state       String?
+  country     String   @default("US")
+  phone       String?
+  email       String?
+  website     String?
+  logo        String?  // URL to logo
+  isActive    Boolean  @default(true)
+  
+  // Audit fields
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  // Relations
+  users           User[]
+  students        Student[]
+  teachers        Teacher[]
+  parents         Parent[]
+  classes         Class[]
+  subjects        Subject[]
+  academicYears   AcademicYear[]
+  feeStructures   FeeStructure[]
+  
+  @@index([code])
+  @@index([isActive])
+  @@map("schools")
+}
+
+/// User - Authentication entity
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  password      String    // Hashed with bcrypt
+  firstName     String
+  lastName      String
+  role          Role
+  phone         String?
+  avatar        String?
+  isActive      Boolean   @default(true)
+  lastLoginAt   DateTime?
+  
+  // Multi-tenant: null for SUPER_ADMIN, required for others
+  schoolId      String?
+  school        School?   @relation(fields: [schoolId], references: [id])
+  
+  // Refresh token for JWT
+  refreshToken  String?
+  
+  // Audit fields
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  // Role-specific profiles (one-to-one)
+  studentProfile  Student?
+  teacherProfile  Teacher?
+  parentProfile   Parent?
+
+  @@index([email])
+  @@index([schoolId])
+  @@index([role])
+  @@index([isActive])
+  @@map("users")
+}
+
+/// Student - Student profile linked to User
+model Student {
+  id              String    @id @default(cuid())
+  studentId       String    // School-specific student ID (e.g., STU-2024-001)
+  dateOfBirth     DateTime?
+  gender          Gender?
+  address         String?
+  city            String?
+  state           String?
+  country         String?
+  emergencyContact String?
+  emergencyPhone  String?
+  bloodGroup      String?
+  medicalNotes    String?
+  admissionDate   DateTime  @default(now())
+  
+  // Foreign keys
+  userId          String    @unique
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  schoolId        String
+  school          School    @relation(fields: [schoolId], references: [id])
+  
+  // Current class
+  currentClassId  String?
+  currentClass    Class?    @relation("CurrentClass", fields: [currentClassId], references: [id])
+  
+  // Audit fields
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  // Relations
+  enrollments     Enrollment[]
+  attendances     Attendance[]
+  grades          Grade[]
+  invoices        Invoice[]
+  parentLinks     StudentParent[]
+
+  @@unique([schoolId, studentId])
+  @@index([schoolId])
+  @@index([currentClassId])
+  @@map("students")
+}
+
+/// Teacher - Teacher profile linked to User
+model Teacher {
+  id              String    @id @default(cuid())
+  employeeId      String    // School-specific employee ID
+  dateOfBirth     DateTime?
+  gender          Gender?
+  address         String?
+  city            String?
+  state           String?
+  country         String?
+  qualification   String?
+  specialization  String?
+  joiningDate     DateTime  @default(now())
+  salary          Decimal?  @db.Decimal(10, 2)
+  
+  // Foreign keys
+  userId          String    @unique
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  schoolId        String
+  school          School    @relation(fields: [schoolId], references: [id])
+  
+  // Audit fields
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  // Relations
+  classesAsHomeroom  Class[]           @relation("HomeroomTeacher")
+  teachingAssignments TeacherSubject[]
+  attendancesTaken   Attendance[]
+
+  @@unique([schoolId, employeeId])
+  @@index([schoolId])
+  @@map("teachers")
+}
+
+/// Parent - Parent profile linked to User
+model Parent {
+  id              String    @id @default(cuid())
+  occupation      String?
+  workPhone       String?
+  workAddress     String?
+  relationship    String?   // e.g., Father, Mother, Guardian
+  
+  // Foreign keys
+  userId          String    @unique
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  schoolId        String
+  school          School    @relation(fields: [schoolId], references: [id])
+  
+  // Audit fields
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  // Relations
+  studentLinks    StudentParent[]
+
+  @@index([schoolId])
+  @@map("parents")
+}
+
+/// StudentParent - Many-to-many relationship between students and parents
+model StudentParent {
+  id          String   @id @default(cuid())
+  studentId   String
+  student     Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  parentId    String
+  parent      Parent   @relation(fields: [parentId], references: [id], onDelete: Cascade)
+  isPrimary   Boolean  @default(false) // Primary contact
+  
+  createdAt   DateTime @default(now())
+
+  @@unique([studentId, parentId])
+  @@map("student_parents")
+}
+
+// ============================================================================
+// ACADEMIC ENTITIES
+// ============================================================================
+
+/// AcademicYear - Academic year/term definition
+model AcademicYear {
+  id          String          @id @default(cuid())
+  name        String          // e.g., "2024-2025"
+  startDate   DateTime
+  endDate     DateTime
+  isCurrent   Boolean         @default(false)
+  termType    AcademicTermType @default(SEMESTER)
+  
+  schoolId    String
+  school      School          @relation(fields: [schoolId], references: [id])
+  
+  // Audit fields
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  deletedAt   DateTime?
+
+  // Relations
+  terms       AcademicTerm[]
+  enrollments Enrollment[]
+  exams       Exam[]
+  feeStructures FeeStructure[]
+
+  @@unique([schoolId, name])
+  @@index([schoolId])
+  @@index([isCurrent])
+  @@map("academic_years")
+}
+
+/// AcademicTerm - Terms within an academic year
+model AcademicTerm {
+  id              String       @id @default(cuid())
+  name            String       // e.g., "Fall Semester", "Term 1"
+  startDate       DateTime
+  endDate         DateTime
+  termNumber      Int          // 1, 2, 3, etc.
+  
+  academicYearId  String
+  academicYear    AcademicYear @relation(fields: [academicYearId], references: [id])
+  
+  // Audit fields
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  // Relations
+  exams           Exam[]
+
+  @@unique([academicYearId, termNumber])
+  @@map("academic_terms")
+}
+
+/// Class - Grade/Section groupings (e.g., Grade 10A)
+model Class {
+  id              String    @id @default(cuid())
+  name            String    // e.g., "Grade 10A", "Class 5B"
+  grade           String    // e.g., "10", "5"
+  section         String?   // e.g., "A", "B"
+  capacity        Int       @default(30)
+  room            String?   // Room number/name
+  
+  schoolId        String
+  school          School    @relation(fields: [schoolId], references: [id])
+  
+  // Homeroom teacher
+  homeroomTeacherId String?
+  homeroomTeacher   Teacher? @relation("HomeroomTeacher", fields: [homeroomTeacherId], references: [id])
+  
+  // Audit fields
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  // Relations
+  currentStudents Student[]     @relation("CurrentClass")
+  enrollments     Enrollment[]
+  classSubjects   ClassSubject[]
+  attendances     Attendance[]
+  feeStructures   FeeStructure[]
+
+  @@unique([schoolId, name])
+  @@index([schoolId])
+  @@index([grade])
+  @@map("classes")
+}
+
+/// Subject - Curriculum subjects
+model Subject {
+  id              String    @id @default(cuid())
+  name            String    // e.g., "Mathematics", "English"
+  code            String    // e.g., "MATH101"
+  description     String?
+  creditHours     Int       @default(1)
+  
+  schoolId        String
+  school          School    @relation(fields: [schoolId], references: [id])
+  
+  // Audit fields
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  // Relations
+  classSubjects   ClassSubject[]
+  teacherSubjects TeacherSubject[]
+  exams           Exam[]
+  grades          Grade[]
+
+  @@unique([schoolId, code])
+  @@index([schoolId])
+  @@map("subjects")
+}
+
+/// ClassSubject - Links classes to subjects with schedule info
+model ClassSubject {
+  id          String   @id @default(cuid())
+  classId     String
+  class       Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
+  subjectId   String
+  subject     Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  
+  // Schedule info (JSON for flexibility)
+  schedule    Json?    // e.g., [{ day: "Monday", startTime: "09:00", endTime: "10:00" }]
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([classId, subjectId])
+  @@map("class_subjects")
+}
+
+/// TeacherSubject - Teachers assigned to teach subjects
+model TeacherSubject {
+  id          String   @id @default(cuid())
+  teacherId   String
+  teacher     Teacher  @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  subjectId   String
+  subject     Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime @default(now())
+
+  @@unique([teacherId, subjectId])
+  @@map("teacher_subjects")
+}
+
+// ============================================================================
+// ENROLLMENT & ATTENDANCE
+// ============================================================================
+
+/// Enrollment - Student enrollment in a class for an academic year
+model Enrollment {
+  id              String       @id @default(cuid())
+  enrollmentDate  DateTime     @default(now())
+  status          String       @default("ACTIVE") // ACTIVE, TRANSFERRED, WITHDRAWN, GRADUATED
+  
+  studentId       String
+  student         Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  
+  classId         String
+  class           Class        @relation(fields: [classId], references: [id])
+  
+  academicYearId  String
+  academicYear    AcademicYear @relation(fields: [academicYearId], references: [id])
+  
+  // Audit fields
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  deletedAt       DateTime?
+
+  @@unique([studentId, classId, academicYearId])
+  @@index([studentId])
+  @@index([classId])
+  @@index([academicYearId])
+  @@map("enrollments")
+}
+
+/// Attendance - Daily attendance records
+model Attendance {
+  id          String           @id @default(cuid())
+  date        DateTime         @db.Date
+  status      AttendanceStatus
+  remarks     String?
+  checkInTime DateTime?
+  checkOutTime DateTime?
+  
+  studentId   String
+  student     Student          @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  
+  classId     String
+  class       Class            @relation(fields: [classId], references: [id])
+  
+  // Who marked the attendance
+  markedById  String
+  markedBy    Teacher          @relation(fields: [markedById], references: [id])
+  
+  // Audit fields
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@unique([studentId, classId, date])
+  @@index([studentId])
+  @@index([classId])
+  @@index([date])
+  @@map("attendances")
+}
+
+// ============================================================================
+// EXAMS & GRADES
+// ============================================================================
+
+/// Exam - Exam definitions
+model Exam {
+  id              String       @id @default(cuid())
+  name            String       // e.g., "Midterm Exam - Math"
+  type            ExamType
+  totalMarks      Int
+  passingMarks    Int
+  date            DateTime?
+  duration        Int?         // in minutes
+  description     String?
+  
+  subjectId       String
+  subject         Subject      @relation(fields: [subjectId], references: [id])
+  
+  academicYearId  String
+  academicYear    AcademicYear @relation(fields: [academicYearId], references: [id])
+  
+  termId          String?
+  term            AcademicTerm? @relation(fields: [termId], references: [id])
+  
+  // Audit fields
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  deletedAt       DateTime?
+
+  // Relations
+  grades          Grade[]
+
+  @@index([subjectId])
+  @@index([academicYearId])
+  @@map("exams")
+}
+
+/// Grade - Student exam scores
+model Grade {
+  id              String   @id @default(cuid())
+  marksObtained   Decimal  @db.Decimal(5, 2)
+  grade           String?  // e.g., "A", "B+", "C"
+  remarks         String?
+  isPublished     Boolean  @default(false)
+  
+  studentId       String
+  student         Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  
+  examId          String
+  exam            Exam     @relation(fields: [examId], references: [id], onDelete: Cascade)
+  
+  subjectId       String
+  subject         Subject  @relation(fields: [subjectId], references: [id])
+  
+  // Audit fields
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([studentId, examId])
+  @@index([studentId])
+  @@index([examId])
+  @@index([subjectId])
+  @@map("grades")
+}
+
+// ============================================================================
+// FEES & PAYMENTS
+// ============================================================================
+
+/// FeeStructure - Fee definitions per class/academic year
+model FeeStructure {
+  id              String       @id @default(cuid())
+  name            String       // e.g., "Tuition Fee", "Lab Fee"
+  description     String?
+  amount          Decimal      @db.Decimal(10, 2)
+  frequency       String       @default("YEARLY") // MONTHLY, QUARTERLY, YEARLY, ONE_TIME
+  dueDay          Int?         // Day of month when due
+  isOptional      Boolean      @default(false)
+  
+  schoolId        String
+  school          School       @relation(fields: [schoolId], references: [id])
+  
+  classId         String?      // null = applies to all classes
+  class           Class?       @relation(fields: [classId], references: [id])
+  
+  academicYearId  String
+  academicYear    AcademicYear @relation(fields: [academicYearId], references: [id])
+  
+  // Audit fields
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  deletedAt       DateTime?
+
+  // Relations
+  invoiceItems    InvoiceItem[]
+
+  @@index([schoolId])
+  @@index([classId])
+  @@index([academicYearId])
+  @@map("fee_structures")
+}
+
+/// Invoice - Generated fee invoices for students
+model Invoice {
+  id              String        @id @default(cuid())
+  invoiceNumber   String        @unique
+  issueDate       DateTime      @default(now())
+  dueDate         DateTime
+  subtotal        Decimal       @db.Decimal(10, 2)
+  discount        Decimal       @default(0) @db.Decimal(10, 2)
+  tax             Decimal       @default(0) @db.Decimal(10, 2)
+  totalAmount     Decimal       @db.Decimal(10, 2)
+  paidAmount      Decimal       @default(0) @db.Decimal(10, 2)
+  balanceAmount   Decimal       @db.Decimal(10, 2)
+  status          PaymentStatus @default(PENDING)
+  notes           String?
+  
+  studentId       String
+  student         Student       @relation(fields: [studentId], references: [id])
+  
+  // Audit fields
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  deletedAt       DateTime?
+
+  // Relations
+  items           InvoiceItem[]
+  payments        Payment[]
+
+  @@index([studentId])
+  @@index([status])
+  @@index([dueDate])
+  @@map("invoices")
+}
+
+/// InvoiceItem - Individual line items in an invoice
+model InvoiceItem {
+  id              String       @id @default(cuid())
+  description     String
+  quantity        Int          @default(1)
+  unitPrice       Decimal      @db.Decimal(10, 2)
+  amount          Decimal      @db.Decimal(10, 2)
+  
+  invoiceId       String
+  invoice         Invoice      @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  
+  feeStructureId  String?
+  feeStructure    FeeStructure? @relation(fields: [feeStructureId], references: [id])
+  
+  createdAt       DateTime     @default(now())
+
+  @@index([invoiceId])
+  @@map("invoice_items")
+}
+
+/// Payment - Payment records with partial payment support
+model Payment {
+  id              String        @id @default(cuid())
+  paymentNumber   String        @unique
+  amount          Decimal       @db.Decimal(10, 2)
+  paymentDate     DateTime      @default(now())
+  paymentMethod   PaymentMethod
+  referenceNumber String?       // Transaction ID, cheque number, etc.
+  notes           String?
+  
+  invoiceId       String
+  invoice         Invoice       @relation(fields: [invoiceId], references: [id])
+  
+  // Who received the payment
+  receivedById    String?
+  
+  // Audit fields
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([invoiceId])
+  @@index([paymentDate])
+  @@map("payments")
+}
