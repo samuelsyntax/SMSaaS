@@ -64,7 +64,6 @@ export default function ProfilePage() {
             const response = await api.getProfile();
             return response.data;
         },
-        initialData: initialUser || undefined,
     });
 
     const [formData, setFormData] = useState({
