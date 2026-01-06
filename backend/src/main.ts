@@ -9,9 +9,15 @@ async function bootstrap() {
     // Global prefix
     app.setGlobalPrefix('api');
 
-    // CORS
+    // CORS - allow multiple origins
+    const allowedOrigins = [
+        process.env.FRONTEND_URL,
+        'http://localhost:3000',
+        'https://smsaas.vercel.app',
+    ].filter(Boolean);
+
     app.enableCors({
-        origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+        origin: allowedOrigins,
         credentials: true,
     });
 
