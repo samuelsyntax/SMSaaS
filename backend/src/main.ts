@@ -10,11 +10,11 @@ async function bootstrap() {
     app.setGlobalPrefix('api');
 
     // CORS - allow multiple origins
-    const allowedOrigins = [
+    const allowedOrigins: string[] = [
         process.env.FRONTEND_URL,
         'http://localhost:3000',
         'https://smsaas.vercel.app',
-    ].filter(Boolean);
+    ].filter((origin): origin is string => Boolean(origin));
 
     app.enableCors({
         origin: allowedOrigins,
